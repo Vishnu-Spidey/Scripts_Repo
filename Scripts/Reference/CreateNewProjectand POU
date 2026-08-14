@@ -1,0 +1,128 @@
+"""
+CODESYS Automation Script — Create a POU and a GVL
+====================================================
+Run this script from within CODESYS:
+  Tools → Scripting → Execute Script File …
+
+Requirements
+------------
+- CODESYS 3.5 SP13 or later (ScriptEngine v2)
+- An existing project must be open, OR set CREATE_NEW_PROJECT = True
+  to let the script create a blank project first.
+
+Configuration
+-------------
+Edit the constants in the CONFIG section below to match your needs.
+"""
+
+# ── CONFIG ──────────────────────────────────────────────────────────────────
+
+CREATE_NEW_PROJECT  = False          # True → create a blank project first
+NEW_PROJECT_PATH    = r"C:\Projects\MyProject.project"   # only used when above is True
+
+# POU settings
+POU_NAME            = "FB_MyFunctionBlock"
+POU_TYPE            = "functionBlock"   # "program" | "functionBlock" | "function"
+POU_LANGUAGE        = "st"              # "st" | "fbd" | "ld" | "il" | "sfc"
+
+# Starter body inserted into the POU implementation
+POU_BODY_CODE       = """\
+(* Auto-generated POU body *)
+VAR
+    iCounter : INT := 0;
+END_VAR
+
+iCounter := iCounter + 1;
+"""
+
+# GVL settings
+GVL_NAME            = "GVL_Globals"
+
+# Variables to pre-populate inside the GVL
+GVL_VARIABLES       = [
+    ("xEnabled",   "BOOL",  "FALSE",  "Master enable flag"),
+    ("iSetpoint",  "INT",   "0",      "Setpoint value"),
+    ("rActual",    "REAL",  "0.0",    "Actual measured value"),
+]
+
+# ── HELPERS ─────────────────────────────────────────────────────────────────
+
+def _find_app(project):
+    """Return the first Application object in the project."""
+    for obj in project.get_children(recursive=True):
+        if obj.is_application:
+            return obj
+    raise RuntimeError("No Application object found in the project.")
+
+
+def _build_gvl_text(variables):
+    """Build the VAR_GLOBAL … END_VAR declaration text."""
+    lines = ["VAR_GLOBAL"]
+    for name, dtype, init, comment in variables:
+        lines.append(
+            "\t{name} : {dtype} := {init};  (* {comment} *)".format(
+                name=name, dtype=dtype, init=init, comment=comment
+            )
+        )
+    lines.append("END_VAR")
+    return "\n".join(lines)
+
+
+# ── MAIN ────────────────────────────────────────────────────────────────────
+
+def main():
+    # ── 1. Obtain / create project ──────────────────────────────────────────
+    if CREATE_NEW_PROJECT:
+        print("[INFO] Creating new project at: {}".format(NEW_PROJECT_PATH))
+        project = projects.create(NEW_PROJECT_PATH)
+    else:
+        project = projects.primary
+        if project is None:
+            raise RuntimeError(
+                "No project is open. Open a project first, "
+                "or set CREATE_NEW_PROJECT = True."
+            )
+        print("[INFO] Using open project: {}".format(project.path))
+
+    # ── 2. Locate the Application ────────────────────────────────────────────
+    app = _find_app(project)
+    print("[INFO] Found application: {}".format(app.get_name()))
+
+    # ── 3. Create the POU ────────────────────────────────────────────────────
+    print("[INFO] Creating POU '{}' (type={}, lang={}) …".format(
+        POU_NAME, POU_TYPE, POU_LANGUAGE))
+
+    pou = app.create_pou(
+        name     = POU_NAME,
+        pou_type = POU_TYPE,
+        language = POU_LANGUAGE,
+    )
+
+    # Write starter code into the implementation part
+    impl = pou.find("Implementation", recursive=True)
+    if impl is not None:
+        impl.textual_declaration.replace(POU_BODY_CODE)
+    else:
+        print("[WARN] Could not locate Implementation section; body not written.")
+
+    print("[OK]   POU '{}' created.".format(POU_NAME))
+
+    # ── 4. Create the GVL ────────────────────────────────────────────────────
+    print("[INFO] Creating GVL '{}' …".format(GVL_NAME))
+
+    gvl = app.create_gvl(GVL_NAME)
+
+    gvl_text = _build_gvl_text(GVL_VARIABLES)
+    gvl.textual_declaration.replace(gvl_text)
+
+    print("[OK]   GVL '{}' created with {} variable(s).".format(
+        GVL_NAME, len(GVL_VARIABLES)))
+
+    # ── 5. Save ──────────────────────────────────────────────────────────────
+    project.save()
+    print("[OK]   Project saved.")
+    print("\nDone! Objects created successfully.")
+
+
+# ── ENTRY POINT ─────────────────────────────────────────────────────────────
+main()
