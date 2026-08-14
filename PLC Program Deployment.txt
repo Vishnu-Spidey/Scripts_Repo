@@ -1,0 +1,277 @@
+//PLC Program Deployment
+using Renci.SshNet;
+using System;
+using System.Net;
+using System.Threading.Tasks;
+using System.Text;
+class Program
+{
+    static async Task Main()
+    {
+        Console.OutputEncoding = System.Text.Encoding.UTF8;
+        string logFilePath = $"app_{DateTime.Now:yyyyMMdd_HHmmss}.log";
+
+        var serversFile = "IPClist.txt";
+        string remoteDeploymentPath = "/var/opt/codesys/PlcLogic/Deployment/";
+        string defaultPackagePath = "DeploymentPackage";
+
+        string PackagePath = PromptForNonEmptyFolderPath(defaultPackagePath);
+        using (var logFileStream = new FileStream(logFilePath, FileMode.Create, FileAccess.Write, FileShare.ReadWrite))
+        using (var logFileWriter = new StreamWriter(logFileStream) { AutoFlush = true })
+        {
+            var multiWriter = new MultiTextWriter(Console.Out, logFileWriter);
+            Console.SetOut(multiWriter);
+        
+
+            Console.Write("Enter SSH username: ");
+            string username = Console.ReadLine();
+
+            Console.Write("Enter SSH password: ");
+            string password = ReadPassword();
+
+            if (!File.Exists(serversFile))
+            {
+                Console.WriteLine($"❌ Could not find {serversFile}");
+                return;
+            }
+
+            var servers = File.ReadAllLines(serversFile)
+                .Select(line => line.Trim())
+                .Where(line => IPAddress.TryParse(line, out _))
+                .ToList();
+
+            Console.WriteLine($"📄 Loaded {servers.Count} IPC(s)system");
+
+
+
+
+            var tasks = servers.Select(ip =>
+                Task.Run(() => DeployToServer(ip, username, password, PackagePath, remoteDeploymentPath))
+            ).ToList();
+
+            await Task.WhenAll(tasks);
+
+            Console.WriteLine("\n✅ Parallel deployment completed.");
+
+            Console.WriteLine("Press Enter to exit...");
+            Console.ReadLine();
+        }
+        
+    }
+
+    static string ReadPassword()
+    {
+        string password = "";
+        ConsoleKeyInfo key;
+
+        do
+        {
+            key = Console.ReadKey(true);
+            if (key.Key == ConsoleKey.Backspace && password.Length > 0)
+            {
+                password = password[0..^1];
+                Console.Write("\b \b");
+            }
+            else if (!char.IsControl(key.KeyChar))
+            {
+                password += key.KeyChar;
+                Console.Write("*");
+            }
+        } while (key.Key != ConsoleKey.Enter);
+
+        Console.WriteLine();
+        return password;
+    }
+
+    static string PromptForNonEmptyFolderPath(string PackagePath)
+    {
+        Console.Write($"Enter the deployment folder path (defaultpath: {PackagePath}): ");
+        string inputPath = Console.ReadLine();
+
+        string folderPath = string.IsNullOrWhiteSpace(inputPath) ? PackagePath : inputPath;
+
+        if (!Directory.Exists(folderPath))
+        {
+            Console.WriteLine("Entered folder does not exist.");
+            return null;
+        }
+
+        bool isEmpty = Directory.GetFiles(folderPath).Length == 0 &&
+                       Directory.GetDirectories(folderPath).Length == 0;
+
+        if (isEmpty)
+        {
+            Console.WriteLine($"{folderPath} Folder is empty.");
+            return null;
+        }
+
+        return folderPath;
+    }
+
+
+    static void DeployToServer(string ip, string username, string password, string pPath, string rDeploymentPath)
+    {
+        Console.WriteLine($"\n🔄 Connecting to {ip}...");
+
+        if (!TestSshConnection(ip, username, password))
+        {
+            Console.WriteLine($"❌ Cannot connect to {ip}. Skipping.");
+            return;
+        }
+
+        try
+        {
+            CreateFolderScript(ip, username, password, rDeploymentPath);
+            UploadFile(ip, username, password, pPath, rDeploymentPath);
+            RunRemoteScript(ip, username, password, rDeploymentPath);
+            Console.WriteLine($"✅ Done on {ip}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ Error on {ip}: {ex.Message}");
+        }
+    }
+
+
+    static bool TestSshConnection(string ip, string username, string password)
+    {
+        using var ssh = new SshClient(ip, username, password);
+        try
+        {
+            ssh.Connect();
+            if (ssh.IsConnected)
+            {
+                ssh.Disconnect();
+                return true;
+            }
+        }
+        catch (Exception) { }
+        return false;
+    }
+
+    static void CreateFolderScript(string ip, string username, string password, string rDeploymentPath)
+    {
+        using var ssh = new SshClient(ip, username, password);
+        ssh.Connect();
+        string CreateFoldercommand = $"mkdir -p {rDeploymentPath} && echo {rDeploymentPath}";
+
+        var CreateFolderresult = ssh.RunCommand(CreateFoldercommand);
+        ssh.Disconnect();
+        if (!string.IsNullOrWhiteSpace(CreateFolderresult.Result))
+            Console.WriteLine($"📥 Output from {ip}:\nCreated folder at: {CreateFolderresult.Result.Trim()}");
+        
+        if (!string.IsNullOrWhiteSpace(CreateFolderresult.Error))
+            Console.WriteLine($"⚠️ Folder creation Error from {ip}:\n{CreateFolderresult.Error}");
+    }
+
+    static void UploadFile(string ip, string username, string password, string pPath, string rDeploymentPath)
+    {
+        using var sftp = new SftpClient(ip, username, password);
+        sftp.Connect();
+
+        void EnsureRemoteDirectoryExists(string path)
+        {
+            var parts = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            string current = "";
+            foreach (var part in parts)
+            {
+                current += "/" + part;
+                if (!sftp.Exists(current))
+                {
+                    sftp.CreateDirectory(current);
+                    Console.WriteLine($"📁 Created remote dir: {current}");
+                }
+            }
+        }
+
+        void UploadDirectory(string sourceDir, string targetDir)
+        {
+            EnsureRemoteDirectoryExists(targetDir);
+
+            foreach (var file in Directory.GetFiles(sourceDir))
+            {
+                string fileName = Path.GetFileName(file);
+                string remoteFile = $"{targetDir}/{fileName}";
+                using var fs = new FileStream(file, FileMode.Open);
+                sftp.UploadFile(fs, remoteFile);
+                Console.WriteLine($"📤 Uploaded file: {remoteFile}");
+            }
+
+            foreach (var subDir in Directory.GetDirectories(sourceDir))
+            {
+                string dirName = Path.GetFileName(subDir);
+                string newRemoteDir = $"{targetDir}/{dirName}";
+
+                UploadDirectory(subDir, newRemoteDir);
+            }
+        }
+
+        UploadDirectory(pPath, rDeploymentPath);
+
+        sftp.Disconnect();
+        Console.WriteLine($"✅ Deployment to {ip}:{rDeploymentPath} Completed!");
+    }
+
+    static void RunRemoteScript(string ip, string username, string password, string rDeploymentPath)
+    {
+        using var ssh = new SshClient(ip, username, password);
+        ssh.Connect();
+        string command = $"cd \"{rDeploymentPath}\" && echo \"{password}\" | sudo -S chmod +x \"{Path.Combine(rDeploymentPath, "deployProgram.sh")}\" && echo \"{Path.Combine(rDeploymentPath, "deployProgram.sh")}\" | sudo -S \"{Path.Combine(rDeploymentPath, "deployProgram.sh")}\"";
+        var result = ssh.RunCommand(command);
+        ssh.Disconnect();
+
+        if (!string.IsNullOrWhiteSpace(result.Result))
+            Console.WriteLine($"📥 Output from {ip}:\n{result.Result}");
+
+        if (!string.IsNullOrWhiteSpace(result.Error))
+            Console.WriteLine($"⚠️ Error/Warning from {ip}:\n{result.Error}");
+    }
+
+    static void FetchMACAddressScript(string ip, string username, string password)
+    {
+        using var ssh = new SshClient(ip, username, password);
+        ssh.Connect();
+        string command = "ip link show enp1s0 | grep ether | awk '{print $2}'";
+        var result = ssh.RunCommand(command);
+        ssh.Disconnect();
+
+        if (!string.IsNullOrWhiteSpace(result.Result))
+            Console.WriteLine($"📥 Output from {ip}:\n{result.Result}");
+
+        if (!string.IsNullOrWhiteSpace(result.Error))
+            Console.WriteLine($"⚠️ Error from {ip}:\n{result.Error}");
+
+
+    }
+
+    class MultiTextWriter : TextWriter
+    {
+        private readonly TextWriter[] writers;
+        public MultiTextWriter(params TextWriter[] writers)
+        {
+            this.writers = writers;
+        }
+
+        public override Encoding Encoding => Encoding.UTF8;
+
+        public override void Write(char value)
+        {
+            foreach (var writer in writers)
+                writer.Write(value);
+        }
+
+        public override void WriteLine(string value)
+        {
+            foreach (var writer in writers)
+                writer.WriteLine(value);
+        }
+
+        public override void Flush()
+        {
+            foreach (var writer in writers)
+                writer.Flush();
+        }
+    }
+
+
+}
