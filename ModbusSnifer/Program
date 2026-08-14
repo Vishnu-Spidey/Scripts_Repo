@@ -1,0 +1,108 @@
+using SharpPcap;
+using PacketDotNet;
+using System;
+using System.IO;
+using System.Text;
+
+class ModbusSniffer
+{
+    static string logFile = "RawModbusCapture.csv";
+
+    static void Main(string[] args)
+    {
+        // Create CSV file with headers if not exists
+        if (!File.Exists(logFile))
+        {
+            File.WriteAllText(logFile,
+                //"Timestamp,Direction,SourceIP,DestinationIP,SourcePort,DestinationPort,TransactionID,ProtocolID,Length,UnitID,FunctionCode,RawDataHex\n");
+                "Timestamp,Direction,SourceIP,DestinationIP,SourcePort,DestinationPort,RawDataHex\n");
+        }
+
+        // List available network interfaces
+        var devices = CaptureDeviceList.Instance;
+        if (devices.Count < 1)
+        {
+            Console.WriteLine("No capture devices found.");
+            return;
+        }
+
+        Console.WriteLine("Available Network Devices:");
+        for (int i = 0; i < devices.Count; i++)
+            Console.WriteLine($"{i}: {devices[i].Description}");
+
+        Console.Write("Select device index: ");
+        int index = int.Parse(Console.ReadLine());
+        var device = devices[index];
+
+        // Open device in promiscuous mode (capture all packets)
+        device.Open(DeviceModes.Promiscuous, 1000);
+
+        // Attach event handler
+        device.OnPacketArrival += OnPacketArrival;
+
+        device.StartCapture();
+        Console.WriteLine("Capturing Modbus TCP traffic (port 1502)... Press Enter to stop.");
+        Console.ReadLine();
+
+        device.StopCapture();
+        device.Close();
+    }
+
+    private static void OnPacketArrival(object sender, PacketCapture e)
+    {
+        try
+        {
+            var rawPacket = e.GetPacket();
+            var packet = Packet.ParsePacket(rawPacket.LinkLayerType, rawPacket.Data);
+
+            var ipPacket = packet.Extract<IPv4Packet>();
+            var tcp = packet.Extract<TcpPacket>();
+
+            if (ipPacket == null || tcp == null) return;
+
+            bool isModbus = tcp.SourcePort == 1502 || tcp.DestinationPort == 1502;
+            if (!isModbus) return;
+
+            byte[] data = tcp.PayloadData;
+            if (data.Length < 8) return;
+
+            //ushort transactionId = (ushort)((data[0] << 8) | data[1]);
+            //ushort protocolId = (ushort)((data[2] << 8) | data[3]);
+            //ushort length = (ushort)((data[4] << 8) | data[5]);
+            //byte unitId = data[6];
+            //byte functionCode = data[1];
+
+            string rawHex = BitConverter.ToString(data).Replace("-", " ");
+            string timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff");
+
+            // ✅ Improved direction detection
+            string direction;
+            if (tcp.DestinationPort == 1502)
+                direction = "Request";
+            else if (tcp.SourcePort == 1502)
+                direction = "Response";
+            else
+                direction = "Unknown";
+
+            // string line = $"{timestamp},{direction}," +
+            //             $"{ipPacket.SourceAddress},{ipPacket.DestinationAddress}," +
+            //             $"{tcp.SourcePort},{tcp.DestinationPort}," +
+            //             $"{transactionId},{protocolId},{length},{unitId},{functionCode}," +
+            //             $"\"{rawHex}\"";
+            string line = $"{timestamp},{direction}," +
+                        $"{ipPacket.SourceAddress},{ipPacket.DestinationAddress}," +
+                        $"{tcp.SourcePort},{tcp.DestinationPort}," +
+                        //$"{transactionId},{protocolId},{length},{unitId},{functionCode}," +
+                        $"\"{rawHex}\"";
+
+            File.AppendAllText(logFile, line + Environment.NewLine);
+            Console.WriteLine(line);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error parsing packet: {ex.Message}");
+        }
+    }
+
+
+}
