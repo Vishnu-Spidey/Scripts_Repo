@@ -1,0 +1,28 @@
+To add additional CAN service(s) on IPC to read data from CAN port(the following steps should work if you want to read data from CAN port 2), you can do:
+1.	Add new shell script under shared_memory_can on IPC:
+a.	The easiest way to do is to duplicate the current existing shell script(you can find here):
+ 
+b.	Rename the duplicated shell script, for example: start_can2_0_interface2.sh
+c.	Modify the CAN interface number and instance number in the new shell script:
+ 
+
+Both CAN interface number and instance number should be same as the CAN port number(which is start from 0). For example: if you want this shell script to read data from the third CAN port, then the two values should be "socketcan:can2” and “2”.
+2.	Add new services which should be executed after IPC starts:
+a.	Duplicated an existing service script(you can find here):
+ 
+b.	Rename the duplicated service script, for example: start_shm_can2_0_interface2.service
+c.	Modify the service script:
+ 
+Both values should be same as the CAN port number(which is start from 0). For example: if you want this shell script to read data from the third CAN port, then the two values should be "2” and “2”(then it’s the same name modified at step1.c).
+3.	Make the new scripts executable on IPC:
+a.	Follow the steps in the existing README.md on Gitlab.
+i.	3.7.1 Make the scripts executable: chmod +x start_can2_0_interface2.sh
+ii.	3.7.4 Copy service files to /etc/systemd/system: sudo cp start_shm_can2_0_interface2.service /etc/systemd/system/
+iii.	3.7.6 Enable services to run at boot:
+1.	sudo systemctl daemon-reload
+2.	sudo systemctl enable start_shm_can2_0_interface2.service
+3.	sudo systemctl start start_shm_can2_0_interface2.service
+iv.	3.7.7 Check service status:
+1.	sudo systemctl status start_shm_can2_0_interface2.service
+
+For your reference, I’ve also attached the modified shell script and service file that can be used to read data from CAN port 2.

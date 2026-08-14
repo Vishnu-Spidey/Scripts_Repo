@@ -1,0 +1,13 @@
+[Unit]
+Description=Start shared memory service and read CAN 2
+After=network.target
+
+[Service]
+WorkingDirectory=/home/amazon/shared_memory_can
+ExecStart=/bin/bash /home/amazon/shared_memory_can/start_can2_0_interface2.sh
+Restart=always
+User=amazon
+Group=amazon
+
+[Install]
+WantedBy=multi-user.target
