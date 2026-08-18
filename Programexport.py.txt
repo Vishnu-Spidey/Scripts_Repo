@@ -1,0 +1,52 @@
+import os
+
+EXPORT_ROOT = r"C:\ST_Export"
+
+# Prompt user
+user_input = system.ui.query(
+    "Export POUs",
+    "Enter POU names separated by commas:",
+    "FB_Motor,FUNC_Speed"
+)
+
+required_files = [x.strip() for x in user_input.split(",")]
+
+app = projects.primary.find("Application")
+
+def export_selected(node):
+
+    for child in node.get_children():
+
+        name = child.get_name()
+
+        # Export only requested POUs
+        if name in required_files:
+
+            try:
+                declaration = child.textual_declaration.text
+                implementation = child.textual_implementation.text
+
+                content = declaration + "\n\n" + implementation
+
+                if not os.path.exists(EXPORT_ROOT):
+                    os.makedirs(EXPORT_ROOT)
+
+                file_path = os.path.join(EXPORT_ROOT, name + ".st")
+
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(content)
+
+                print("Exported:", file_path)
+
+            except:
+                pass
+
+        # Recursive search
+        try:
+            export_selected(child)
+        except:
+            pass
+
+export_selected(app)
+
+print("Done")
